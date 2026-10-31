@@ -11,19 +11,19 @@ AI Security Auditor examines an existing software project in **two clearly separ
 
 ### 1. Security overview
 
-![AI Security Auditor — project selection and security overview](images/security-overview.png)
+![AI Security Auditor — project selection and security overview](images/Screenshot%202026-10-31%20122353.png)
 
 The dashboard shows the selected project, detected technologies, files scanned, Python rule findings, Ollama reviews, AI-discovered leads, errors and elapsed time.
 
 ### 2. Findings and AI verdicts
 
-![AI Security Auditor — findings and AI verdicts with severity filter](images/findings-and-verdicts.png)
+![AI Security Auditor — findings and AI verdicts with severity filter](images/Screenshot%202026-10-31%20122425.png)
 
 Filter the findings by severity or search by file, category or AI verdict. Python findings remain visible whether Ollama has reviewed them or not.
 
 ### 3. Examine an individual finding and its highlighted code
 
-![AI Security Auditor — highlighted source line and AI verdict](images/code-review-highlight.png)
+![AI Security Auditor — highlighted source line and AI verdict](images/Screenshot%202026-10-31%20122448.png)
 
 **The dropdown in Section 5 is how you change which code issue you are reviewing.** The relevant source line is highlighted in amber, with its original file and line number.
 
@@ -107,7 +107,7 @@ To obtain it using Git instead (once the repository has been published), use:
 
 ```powershell
 cd E:\
-git clone https://github.com/tuckbllor/AI-Security-Auditor.git
+git clone https://github.com/tuckbloor/AI-Security-Auditor.git
 cd .\AI-Security-Auditor
 ```
 
@@ -285,7 +285,7 @@ Open **4 · Findings and AI verdicts**. It contains **all Python leads**, even i
 7. Read the security explanation and, if available, the **Ollama verdict** below the highlighted code.
 8. Reopen the **same dropdown** to select and inspect the next issue. Repeat for each finding you want to review.
 
-![Example of the code-review dropdown and amber-highlighted reported line](images/code-review-highlight.png)
+![Example of the code-review dropdown and amber-highlighted reported line](images/Screenshot%202026-10-31%20122448.png)
 
 **Important example:** A static command such as `PRAGMA foreign_keys=OFF` passed to a database `exec()` method is not, by itself, proof of SQL injection. Look for user-controlled SQL strings and missing parameterisation before treating an AI verdict as a real security flaw. Ollama can misinterpret a code snippet.
 
