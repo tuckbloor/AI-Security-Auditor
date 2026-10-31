@@ -13,19 +13,19 @@ The classic interface is preserved: **one full-width progress bar**, readable ac
 
 ### 1. Security overview
 
-![AI Security Auditor — project selection and security overview](images/security-overview.png)
+![AI Security Auditor — project selection and security overview](images/Screenshot%202026-10-31%20122353.png)
 
 The dashboard shows the selected project, detected technologies, files scanned, Python rule findings, Ollama reviews, AI-discovered leads, errors and elapsed time.
 
 ### 2. Findings and AI verdicts
 
-![AI Security Auditor — findings and AI verdicts with severity filter](images/findings-and-verdicts.png)
+![AI Security Auditor — findings and AI verdicts with severity filter](images/Screenshot%202026-10-31%20122425.png)
 
 Filter the findings by severity or search by file, category or AI verdict. Python findings remain visible whether Ollama has reviewed them or not.
 
 ### 3. Examine an individual finding and its highlighted code
 
-![AI Security Auditor — highlighted source line and AI verdict](images/code-review-highlight.png)
+![AI Security Auditor — highlighted source line and AI verdict](images/Screenshot%202026-10-31%20122448.png)
 
 **The dropdown in Section 5 is how you change which code issue you are reviewing.** The relevant source line is highlighted in amber, with its original file and line number.
 
@@ -326,7 +326,7 @@ Open **4 · Findings and AI verdicts**. It contains **all Python leads**, even i
 7. Read the security explanation and, if available, the **Ollama verdict** below the highlighted code.
 8. Reopen the **same dropdown** to select and inspect the next issue. Repeat for each finding you want to review.
 
-![Example of the code-review dropdown and amber-highlighted reported line](images/code-review-highlight.png)
+![Example of the code-review dropdown and amber-highlighted reported line](images/Screenshot%202026-10-31%20122448.png)
 
 **Important example:** A static command such as `PRAGMA foreign_keys=OFF` passed to a database `exec()` method is not, by itself, proof of SQL injection. Look for user-controlled SQL strings and missing parameterisation before treating an AI verdict as a real security flaw. Ollama can misinterpret a code snippet.
 
@@ -395,9 +395,9 @@ AI-Security-Auditor/
 ├── tests/
 ├── sample-project/
 ├── images/
-│   ├── security-overview.png
-│   ├── findings-and-verdicts.png
-│   └── code-review-highlight.png
+│   ├── Screenshot 2026-10-31 122353.png
+│   ├── Screenshot 2026-10-31 122425.png
+│   └── Screenshot 2026-10-31 122448.png
 └── README.md
 ```
 
@@ -413,10 +413,10 @@ The test suite covers Python scanning, the Ollama request/response workflow, **a
 
 ### Update the GitHub README after installing the overlay
 
-Place this `README.md` in the **root** of your existing `AI-Security-Auditor` repository. Keep your screenshots in the existing root `images/` directory with the filenames used above. From PowerShell inside the repository:
+Place this `README.md` in the **root** of your existing `AI-Security-Auditor` repository. The three original screenshot files must be present under the repository root `images/` directory with the exact filenames referenced above. This documentation package includes those files; do not rename them. From PowerShell inside the repository:
 
 ```powershell
-git add README.md
+git add README.md images/
 git commit -m "Document autonomous security investigation agent"
 git push
 ```
