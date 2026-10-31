@@ -19,6 +19,7 @@ from ollama_client import installed_models, OllamaError, redact_secrets
 from reviewed_edits import source_excerpt, make_proposal, apply_proposal
 from findings_view import (ALL_SEVERITIES, build_findings_rows, filter_findings_rows,
                            render_highlighted_excerpt)
+from agent_investigator import investigate_project
 
 VERSION = '0.4.5'
 st.set_page_config(page_title=f'AI Security Auditor v{VERSION}', layout='wide', page_icon='🛡️')
@@ -85,6 +86,14 @@ with st.sidebar:
         if st.session_state.model_error:
             with st.expander('Connection details'):
                 st.code(st.session_state.model_error)
+    st.divider()
+    use_agent = st.toggle('🧠 Autonomous AI security agent (tool calling)', value=True,
+                            help='Ollama chooses read-only tools to inspect real files, search related code and verify leads. '
+                                 'Turn this on before starting the Python + Ollama audit.')
+    if use_agent:
+        st.success('Agent mode enabled — AI will choose investigation tools after the Python scan.')
+    agent_steps = st.number_input('Agent maximum reasoning steps per investigation', 2, 16, 6, 1,
+                                   disabled=not use_agent)
     st.divider()
     st.header('Timeouts and scope')
     total_minutes = st.number_input('Maximum AI audit duration (minutes)', 5, 240, 30, 5)
@@ -271,63 +280,135 @@ def audit_run(use_ai: bool):
                         last_update = monotonic()
                 return ''.join(response_parts)
 
-            total = min(len(scan_result.findings), int(max_ai_findings))
-            if len(scan_result.findings) > total:
-                limited = True
-            update('AI review starting', f'{total} Python leads queued for Ollama', 0.0)
-            for index, finding in enumerate(scan_result.findings[:total], 1):
-                if monotonic() >= deadline:
+            if use_agent:
+                # Autonomous agent mode: Ollama chooses which read-only tools to use.
+                # One existing full-width progress bar and same result format.
+                total = min(len(scan_result.findings), int(max_ai_findings))
+                if len(scan_result.findings) > total:
                     limited = True
-                    failures.append({'path': '', 'reason': 'Overall audit timeout; remaining work unreviewed.'})
-                    break
-                name = f'{finding.path}:{finding.line} · lead {index}/{total}'
-                update('Preparing AI review', name, 0.65 * (index-1) / max(1, total))
-                try:
-                    payload, source_hash = review_prompt(project, finding)
-                    raw = call_model(payload, REVIEW_SYSTEM, name, 0.65 * index / max(1, total))
-                    update('Python validating AI response', name, 0.65 * index / max(1, total))
-                    review = parse_review(raw)
-                    reviews[finding.id] = {'review': review, 'source_hash': source_hash, 'model': selected_model}
-                    reviewed += 1
-                    update('AI review recorded', name, 0.65 * index / max(1, total))
-                except (OllamaError, TimeoutError, ValueError, OSError) as exc:
-                    failures.append({'path': name, 'reason': str(exc)[:400]})
-                    update('AI review failed (continuing)', f'{name} · {str(exc)[:100]}',
-                           0.65 * index / max(1, total))
-                    if 'Overall audit' in str(exc):
-                        limited = True
-                        break
-            if ai_discovery and monotonic() < deadline:
-                max_chunks = int(max_discovery_chunks)
-                seen: set[str] = set()
-                for index, chunk in enumerate(iter_code_chunks(project, max_files=int(max_discovery_files),
-                                                               max_chunks=max_chunks,
-                                                               include_test_files=include_tests), 1):
+                update('Security agent starting',
+                       f'{total} Python leads queued; model will choose repository tools', 0.0)
+                for index, finding in enumerate(scan_result.findings[:total], 1):
                     if monotonic() >= deadline:
                         limited = True
-                        failures.append({'path': '', 'reason': 'Overall audit timeout; AI discovery incomplete.'})
+                        failures.append({'path': '', 'reason': 'Overall audit timeout; remaining leads unreviewed.'})
                         break
-                    name = f'{chunk.path}:{chunk.start}-{chunk.end} · chunk {index}/{max_chunks}'
-                    update('AI investigating additional code', name, 0.65 + 0.34 * (index-1)/max_chunks)
+                    name = f'{finding.path}:{finding.line} · lead {index}/{total}'
+                    ratio = 0.65 * (index - 1) / max(1, total)
+                    update('Agent investigating Python lead', name, ratio)
                     try:
-                        raw = call_model(discovery_prompt(chunk, scan_result.frameworks),
-                                         DISCOVER_SYSTEM, name, 0.65 + 0.34 * index/max_chunks)
-                        update('Python validating discovered locations', name,
-                               0.65 + 0.34 * index/max_chunks)
-                        for issue in parse_discovery(raw, chunk):
-                            if issue['id'] not in seen:
+                        _, source_hash = source_excerpt(project, finding.path, finding.line, radius=2)
+                        outcome = investigate_project(
+                            project, selected_model, finding=finding, include_tests=include_tests,
+                            steps_limit=int(agent_steps), deadline=deadline,
+                            request_seconds=float(request_minutes) * 60,
+                            inactivity_seconds=float(inactivity_seconds),
+                            on_activity=lambda activity, r=ratio: update(
+                                'Agent investigation', activity, r),
+                        )
+                        for issue in outcome.issues:
+                            if issue['id'] not in {d['id'] for d in discovery}:
                                 discovery.append(issue)
-                                seen.add(issue['id'])
-                        count_ai += 1
+                        if outcome.review is not None:
+                            reviews[finding.id] = {'review': outcome.review,
+                                                   'source_hash': source_hash, 'model': selected_model}
+                            reviewed += 1
+                        if outcome.incomplete:
+                            failures.append({'path': name, 'reason': outcome.note})
+                        update('Agent tool investigation',
+                               f'{name} · {len(outcome.tools_used)} tools · {outcome.steps} steps · {outcome.note}',
+                               0.65 * index / max(1, total))
                     except (OllamaError, TimeoutError, ValueError, OSError) as exc:
                         failures.append({'path': name, 'reason': str(exc)[:400]})
-                        update('AI discovery failed (continuing)', f'{name} · {str(exc)[:100]}',
-                               0.65 + 0.34 * index/max_chunks)
-            elif ai_discovery:
-                limited = True
-            if (ai_discovery and
-                    count_ai + sum('chunk ' in f['path'] for f in failures) >= int(max_discovery_chunks)):
-                limited = True  # Chunk cap reached; some source may remain unexamined.
+                        update('Agent investigation failed (continuing)', f'{name} · {exc}',
+                               0.65 * index / max(1, total))
+                if ai_discovery and monotonic() < deadline:
+                    update('Agent looking for additional issues',
+                           'Choosing file search and code-reading tools independently', 0.65)
+                    try:
+                        outcome = investigate_project(
+                            project, selected_model, include_tests=include_tests,
+                            steps_limit=min(int(agent_steps), int(max_discovery_chunks)),
+                            deadline=deadline, request_seconds=float(request_minutes) * 60,
+                            inactivity_seconds=float(inactivity_seconds),
+                            on_activity=lambda activity: update(
+                                'Agent independent investigation', activity, 0.75),
+                        )
+                        discovery_ids = {d['id'] for d in discovery}
+                        for issue in outcome.issues:
+                            if issue['id'] not in discovery_ids:
+                                discovery.append(issue)
+                                discovery_ids.add(issue['id'])
+                        count_ai = len(outcome.tools_used)
+                        if outcome.incomplete:
+                            failures.append({'path': 'AI independent investigation',
+                                             'reason': outcome.note})
+                        update('Agent independent investigation finished',
+                               f'{count_ai} tool calls · {len(discovery)} AI-suspected additional findings',
+                               0.99)
+                    except (OllamaError, TimeoutError, ValueError, OSError) as exc:
+                        failures.append({'path': 'AI independent investigation',
+                                         'reason': str(exc)[:400]})
+                elif ai_discovery:
+                    limited = True
+            else:
+                total = min(len(scan_result.findings), int(max_ai_findings))
+                if len(scan_result.findings) > total:
+                    limited = True
+                update('AI review starting', f'{total} Python leads queued for Ollama', 0.0)
+                for index, finding in enumerate(scan_result.findings[:total], 1):
+                    if monotonic() >= deadline:
+                        limited = True
+                        failures.append({'path': '', 'reason': 'Overall audit timeout; remaining work unreviewed.'})
+                        break
+                    name = f'{finding.path}:{finding.line} · lead {index}/{total}'
+                    update('Preparing AI review', name, 0.65 * (index-1) / max(1, total))
+                    try:
+                        payload, source_hash = review_prompt(project, finding)
+                        raw = call_model(payload, REVIEW_SYSTEM, name, 0.65 * index / max(1, total))
+                        update('Python validating AI response', name, 0.65 * index / max(1, total))
+                        review = parse_review(raw)
+                        reviews[finding.id] = {'review': review, 'source_hash': source_hash, 'model': selected_model}
+                        reviewed += 1
+                        update('AI review recorded', name, 0.65 * index / max(1, total))
+                    except (OllamaError, TimeoutError, ValueError, OSError) as exc:
+                        failures.append({'path': name, 'reason': str(exc)[:400]})
+                        update('AI review failed (continuing)', f'{name} · {str(exc)[:100]}',
+                               0.65 * index / max(1, total))
+                        if 'Overall audit' in str(exc):
+                            limited = True
+                            break
+                if ai_discovery and monotonic() < deadline:
+                    max_chunks = int(max_discovery_chunks)
+                    seen: set[str] = set()
+                    for index, chunk in enumerate(iter_code_chunks(project, max_files=int(max_discovery_files),
+                                                                   max_chunks=max_chunks,
+                                                                   include_test_files=include_tests), 1):
+                        if monotonic() >= deadline:
+                            limited = True
+                            failures.append({'path': '', 'reason': 'Overall audit timeout; AI discovery incomplete.'})
+                            break
+                        name = f'{chunk.path}:{chunk.start}-{chunk.end} · chunk {index}/{max_chunks}'
+                        update('AI investigating additional code', name, 0.65 + 0.34 * (index-1)/max_chunks)
+                        try:
+                            raw = call_model(discovery_prompt(chunk, scan_result.frameworks),
+                                             DISCOVER_SYSTEM, name, 0.65 + 0.34 * index/max_chunks)
+                            update('Python validating discovered locations', name,
+                                   0.65 + 0.34 * index/max_chunks)
+                            for issue in parse_discovery(raw, chunk):
+                                if issue['id'] not in seen:
+                                    discovery.append(issue)
+                                    seen.add(issue['id'])
+                            count_ai += 1
+                        except (OllamaError, TimeoutError, ValueError, OSError) as exc:
+                            failures.append({'path': name, 'reason': str(exc)[:400]})
+                            update('AI discovery failed (continuing)', f'{name} · {str(exc)[:100]}',
+                                   0.65 + 0.34 * index/max_chunks)
+                elif ai_discovery:
+                    limited = True
+                if (ai_discovery and
+                        count_ai + sum('chunk ' in f['path'] for f in failures) >= int(max_discovery_chunks)):
+                    limited = True  # Chunk cap reached; some source may remain unexamined.
             if failures:
                 ai_status.update(label='⚠️ Stage 2 — AI investigation ended with errors/timeouts',
                                  state='error', expanded=False)
@@ -339,7 +420,8 @@ def audit_run(use_ai: bool):
                                  f'{count_ai} source chunks', state='complete', expanded=False)
             update('AI investigation finished',
                    f'{reviewed} findings reviewed · {len(discovery)} additional AI leads', 1.0)
-        st.caption('Stage 1 Python findings remain available above; final combined results are below.')
+        st.caption('Stage 1 Python findings remain available above; final combined results are below.'
+                       + (' Agent tools were restricted to reading and searching project source.' if use_agent else ''))
     else:
         st.info('Stage 2 — AI Deep Investigation was skipped (Python-only scan). '
                 'Select an installed Ollama model and start an AI-driven audit to run both stages.')
@@ -353,7 +435,7 @@ def audit_run(use_ai: bool):
         'root': str(Path(project).resolve()), 'result': scan_result, 'reviews': reviews,
         'discovery': discovery, 'failures': failures, 'limited': limited, 'use_ai': use_ai,
         'model': selected_model if use_ai else None, 'seconds': round(monotonic() - start, 1),
-        'ai_chunks': count_ai, 'finished': completed, 'activity': list(events),
+        'ai_chunks': count_ai, 'agent_mode': bool(use_agent and use_ai), 'finished': completed, 'activity': list(events),
     }
     st.session_state.pop('pending_fix', None)
 
@@ -374,7 +456,7 @@ if not st.session_state.audit_started:
             if st.button('🔎 Python scan only', disabled=not project, use_container_width=True):
                 scan_action = False
         with buttons[2]:
-            st.caption('AI processes real excerpts. A running or completed audit hides scan actions '
+            st.caption('AI agent mode is configured in the sidebar. A completed audit hides scan actions '
                        'until you choose a project again.')
     if scan_action is not None:
         # Hide BOTH buttons as soon as a scan starts, including the grey rule-scan
@@ -416,7 +498,8 @@ if record and project and record['root'] == str(Path(project).resolve()):
     if record['use_ai']:
         st.write(f"**Ollama:** {record['model']} · "
                  f"{len(reviews)}/{len(result.findings)} rule findings reviewed · "
-                 f"{record['ai_chunks']} source chunks analysed independently")
+                 f"{record['ai_chunks']} " + ('agent tool calls' if record.get('agent_mode')
+                                             else 'source chunks analysed independently'))
     st.caption('Rule severity counts: ' + ' · '.join(f'{level}: {counts[level]}' for level in SEVERITIES))
     if not result.findings and not discovery:
         st.success('No findings were returned within the examined scope. This does not prove security.')
